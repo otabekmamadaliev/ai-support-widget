@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Embed demo — a plain HTML page with the widget dropped in</title>
+    <style>
+      /* Deliberately hostile host styles: heavy resets and greedy selectors that
+         would wreck a widget rendered in the light DOM. The shadow root means
+         none of this reaches it. */
+      * { margin: 0; padding: 0; box-sizing: content-box; }
+      body {
+        font-family: Georgia, 'Times New Roman', serif;
+        background: #1d1b19;
+        color: #efe9df;
+        line-height: 1.7;
+        padding: 8vh 6vw;
+      }
+      div { border: 0 !important; }
+      button { background: crimson !important; color: yellow !important; font-size: 22px !important; }
+      h1 { font-size: 40px; letter-spacing: -0.02em; margin-bottom: 18px; }
+      p { max-width: 60ch; margin-bottom: 14px; color: #bdb3a5; }
+      code {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        background: #2b2825;
+        color: #e8c9a0;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 15px;
+      }
+      pre {
+        margin-top: 26px;
+        background: #14120f;
+        border: 1px solid #35302a;
+        border-radius: 10px;
+        padding: 20px;
+        overflow-x: auto;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 13.5px;
+        color: #c9bfae;
+        line-height: 1.8;
+      }
+      .tag { color: #7cc0ff; }
+      .attr { color: #9ee6c8; }
+      .str { color: #ffcb8a; }
+    </style>
+  </head>
+  <body>
+    <h1>Not a React app.</h1>
+    <p>
+      This page is one hand-written HTML file. No build step, no framework, no stylesheet of the
+      widget's own. Its CSS is deliberately hostile — a <code>content-box</code> reset, a
+      <code>border: 0 !important</code> on every <code>div</code>, and a rule that paints every
+      <code>button</code> crimson-on-yellow at 22px.
+    </p>
+    <p>
+      The widget in the corner is unaffected, because it renders inside a shadow root with its own
+      inlined styles. That isolation is the whole reason a client can paste this in without
+      auditing their CSS first.
+    </p>
+    <p>The entire integration is the tag below.</p>
+
+    <pre><span class="tag">&lt;script</span>
+  <span class="attr">src</span>=<span class="str">"/widget.js"</span>
+  <span class="attr">data-api</span>=<span class="str">"/api/chat"</span>
+  <span class="attr">data-name</span>=<span class="str">"Northgate Assistant"</span>
+  <span class="attr">data-accent</span>=<span class="str">"#3f8ee6"</span>
+  <span class="tag">defer&gt;&lt;/script&gt;</span></pre>
+
+    <script
+      src="/widget.js"
+      data-api="/api/chat"
+      data-name="Northgate Assistant"
+      data-accent="#3f8ee6"
+      data-greeting="Hi 👋 This widget was added to a plain HTML page with one script tag. Ask me about Northgate Dental's prices or hours."
+      defer
+    ></script>
+  </body>
+</html>
