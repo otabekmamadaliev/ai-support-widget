@@ -22,7 +22,7 @@ export const config = { runtime: 'nodejs', maxDuration: 30 };
 // The model is an env var so it can be swapped without a code change — free-tier
 // quotas differ per model and Google retires older ones (gemini-2.0-flash is
 // already shut down).
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const MAX_TOKENS = 500; // a receptionist answer, not an essay
 const MAX_USER_MESSAGES = 20; // per session
 const MAX_TRANSCRIPT = 45; // user + assistant turns we'll accept at all
@@ -245,10 +245,35 @@ export default async function handler(req, res) {
         status
       ] ?? 'unknown';
 
+    // Google retires models on its own schedule, so "the configured model no
+    // longer exists" is a failure this demo should expect rather than treat as
+    // a mystery. Report which models the key *can* use — those are public
+    // product identifiers, not secrets — so the fix is a GEMINI_MODEL change
+    // rather than a debugging session.
+    let available;
+    if (status === 404) {
+      try {
+        const page = await new GoogleGenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+        }).models.list();
+        available = [];
+        for await (const m of page) {
+          if (m.supportedActions?.includes('generateContent')) {
+            available.push(String(m.name).replace(/^models\//, ''));
+          }
+          if (available.length >= 40) break;
+        }
+      } catch (listErr) {
+        console.error('[api/chat] could not list models', listErr);
+      }
+    }
+
     send({
       type: 'error',
       reason,
       status,
+      configuredModel: MODEL,
+      ...(available?.length ? { available } : {}),
       message:
         status === 429
           ? "The assistant has hit today's free-tier limit. Please try again later."
