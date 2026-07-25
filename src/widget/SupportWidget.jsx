@@ -299,7 +299,7 @@ export default function SupportWidget(props) {
             <p className="legal">
               <span className="legal__by">
                 <i aria-hidden="true" />
-                Powered by Claude
+                Powered by Gemini
               </span>
               <span className="legal__count">
                 {remaining} message{remaining === 1 ? '' : 's'} left

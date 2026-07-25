@@ -34,8 +34,8 @@ function devApi() {
 export default defineConfig(({ mode }) => {
   // The handler reads process.env, so mirror .env.local into it for dev.
   const env = loadEnv(mode, process.cwd(), '');
-  if (!process.env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY) {
-    process.env.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+  for (const name of ['GEMINI_API_KEY', 'GEMINI_MODEL']) {
+    if (!process.env[name] && env[name]) process.env[name] = env[name];
   }
 
   return {

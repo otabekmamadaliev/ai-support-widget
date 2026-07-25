@@ -30,7 +30,7 @@ export function useChat({ endpoint, greeting, maxMessages }) {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      // The canned greeting is ours, not Claude's — the API needs the transcript
+      // The canned greeting is ours, not the model's — the API needs the transcript
       // to start with a user turn, so it never goes upstream.
       const payload = history
         .filter((m) => !m.greeting)
