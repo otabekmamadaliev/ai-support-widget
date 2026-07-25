@@ -105,8 +105,8 @@ the widget footer is a courtesy, not the control.
 
 | Limit | Value | Where |
 | --- | --- | --- |
-| Model | `gemini-2.5-flash` | Overridable via the `GEMINI_MODEL` env var |
-| Thinking | **disabled** | `thinkingConfig: { thinkingBudget: 0 }` |
+| Model | `gemini-3.6-flash` | Overridable via the `GEMINI_MODEL` env var |
+| Thinking | **turned down** | `thinkingLevel: 'MINIMAL'` on 3.x, `thinkingBudget: 0` on 2.5 |
 | Response length | 500 tokens | `maxOutputTokens` — a receptionist answer, not an essay |
 | Messages per conversation | 20 | Counted from the submitted transcript |
 | Characters per message | 700 | Rejected before reaching Google |
@@ -114,13 +114,26 @@ the widget footer is a courtesy, not the control.
 
 Two of those are worth explaining.
 
-**Thinking is off.** Gemini 2.5 and later reason before answering by default.
-Looking up a fixed price in a system prompt gains nothing from that, and it costs
-latency and quota on every single message — so `thinkingBudget: 0` disables it.
+**Thinking is turned down.** Gemini reasons before answering by default. Looking
+up a fixed price in a system prompt gains nothing from that, and it costs latency
+and quota on every message. Annoyingly the control differs by family — 3.x takes
+a `thinkingLevel` enum, 2.5 takes a numeric `thinkingBudget`, and sending the
+wrong one is a 400 — so the handler picks by family, and **falls back to sending
+no thinking config at all** if the model rejects it. Turning reasoning down is an
+optimisation, not a requirement; a pricier reply beats a broken demo.
 
-**The model is an env var.** Free-tier quotas differ per model and Google retires
-older ones — `gemini-2.0-flash` is already shut down — so swapping model is a
-dashboard change, not a deploy.
+**The model is an env var.** Google's model list moves fast: `gemini-2.0-flash`
+is shut down, and `gemini-2.5-flash` returned 404 for this key. So the model is
+read from `GEMINI_MODEL`, and on a 404 the function reports which models the key
+*can* use — turning "the demo is broken" into a dashboard change rather than a
+debugging session.
+
+> A note on writing this integration: my first attempt used `gemini-2.0-flash`
+> (shut down), `generateContent` shapes from a deprecated package, and
+> `thinkingBudget` on a 3.x model (a 400). The docs, the SDK's own JSDoc examples
+> and search results all disagreed with each other. What actually worked was
+> reading the installed package's TypeScript definitions — that's where the real
+> contract lives.
 
 The per-IP window lives in the function instance's memory, so instances that
 scale out don't share a count — it's a quota guardrail, not a security boundary.

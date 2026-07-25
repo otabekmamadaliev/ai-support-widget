@@ -294,18 +294,11 @@ export default async function handler(req, res) {
       }
     }
 
-    // A 400 describes what's wrong with *our* request — a bad field name or
-    // value — so the text is about this repo's own code, not the caller's data
-    // or the key. Surfacing a truncated copy makes a misconfiguration
-    // self-explanatory instead of a log-diving exercise.
-    const detail = status === 400 ? String(err?.message ?? '').slice(0, 400) : undefined;
-
     send({
       type: 'error',
       reason,
       status,
       configuredModel: MODEL,
-      ...(detail ? { detail } : {}),
       ...(available?.length ? { available } : {}),
       message:
         status === 429
