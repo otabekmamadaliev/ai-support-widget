@@ -15,7 +15,7 @@ This repo contains both halves: the widget, and a fictional dental practice
 ## How it works
 
 ```
-Browser                     Vercel Edge Function            Anthropic
+Browser                    Vercel Node Function             Anthropic
 ┌──────────────┐            ┌──────────────────┐            ┌─────────┐
 │ widget       │ ─ POST ──▶ │ /api/chat        │ ─────────▶ │ Claude  │
 │ (shadow DOM) │            │ • rate limits    │            │ Haiku   │
@@ -23,6 +23,11 @@ Browser                     Vercel Edge Function            Anthropic
 └──────────────┘            │ • API key        │            └─────────┘
                             └──────────────────┘
 ```
+
+The function runs on the **Node** runtime, not Edge: the Anthropic SDK reaches
+for `node:fs` and `node:path`, which the Edge runtime refuses to bundle. Node
+streams responses just as well, and it means the same `(req, res)` handler runs
+locally under Vite with no adapter.
 
 **The API key never leaves the server.** It is read from `process.env.ANTHROPIC_API_KEY`
 inside the serverless function. There is no `VITE_` prefix anywhere near it, so it

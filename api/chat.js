@@ -1,15 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt } from '../shared/clinic.js';
 
-export const config = { runtime: 'edge' };
-
 /**
  * POST /api/chat
  *
  * Takes a transcript, streams Claude's reply back as Server-Sent Events.
  * The Anthropic API key lives only in this process — the browser bundle never
  * sees it, and the client cannot influence the system prompt or the model.
+ *
+ * Runs on the Node runtime rather than Edge: the Anthropic SDK reaches for
+ * `node:fs` and `node:path`, which the Edge runtime refuses to bundle.
  */
+export const config = { runtime: 'nodejs', maxDuration: 30 };
 
 // ── Cost controls ────────────────────────────────────────────────────────────
 // This is a portfolio demo on a personal API key, so the limits are deliberately
@@ -20,6 +22,7 @@ const MAX_TOKENS = 500; // a receptionist answer, not an essay
 const MAX_USER_MESSAGES = 20; // per session
 const MAX_TRANSCRIPT = 45; // user + assistant turns we'll accept at all
 const MAX_CHARS = 700; // per message
+const MAX_BODY_BYTES = 64 * 1024; // hard cap before we even parse
 const IP_LIMIT = 30; // requests…
 const IP_WINDOW_MS = 60 * 60 * 1000; // …per hour
 
@@ -55,17 +58,34 @@ function rateLimited(ip) {
   return false;
 }
 
-function fail(status, code, message) {
-  return new Response(JSON.stringify({ error: { code, message } }), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
+function fail(res, status, code, message) {
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ error: { code, message } }));
 }
 
 /**
- * Accept only what we expect: an array of plain user/assistant text turns,
- * alternating, ending on a user turn. Anything else is rejected rather than
- * forwarded — the client does not get to shape the request we send upstream.
+ * Vercel pre-parses JSON bodies; Vite's dev middleware does not. Handle both so
+ * local development exercises this exact file rather than a stand-in.
+ */
+async function readJson(req) {
+  if (req.body && typeof req.body === 'object') return req.body;
+
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new Error('body too large');
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return null;
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+/**
+ * Accept only what we expect: an array of plain user/assistant text turns
+ * ending on a user turn. Anything else is rejected rather than forwarded — the
+ * client does not get to shape the request we send upstream.
  */
 function validate(body) {
   if (!body || !Array.isArray(body.messages)) {
@@ -110,91 +130,86 @@ function validate(body) {
   return { messages: clean };
 }
 
-export default async function handler(request) {
-  if (request.method !== 'POST') {
-    return fail(405, 'method_not_allowed', 'Use POST.');
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return fail(res, 405, 'method_not_allowed', 'Use POST.');
   }
 
+  const forwarded = req.headers['x-forwarded-for'];
   const ip =
-    request.headers.get('x-real-ip') ||
-    request.headers.get('x-forwarded-for')?.split(',')[0].trim() ||
+    req.headers['x-real-ip'] ||
+    (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : forwarded?.[0]) ||
+    req.socket?.remoteAddress ||
     'unknown';
 
   if (rateLimited(ip)) {
-    return fail(429, 'rate_limited', 'Too many messages from this address. Try again later.');
+    return fail(res, 429, 'rate_limited', 'Too many messages from this address. Try again later.');
   }
 
   let body;
   try {
-    body = await request.json();
+    body = await readJson(req);
   } catch {
-    return fail(400, 'bad_request', 'Body must be JSON.');
+    return fail(res, 400, 'bad_request', 'Body must be JSON.');
   }
 
   const { messages, error } = validate(body);
-  if (error) return fail(error[0] === 'session_limit' ? 429 : 400, error[0], error[1]);
+  if (error) {
+    return fail(res, error[0] === 'session_limit' ? 429 : 400, error[0], error[1]);
+  }
 
   // Checked after validation so a malformed request still gets an accurate
   // reason, rather than every problem reporting as a configuration failure.
   if (!process.env.ANTHROPIC_API_KEY) {
-    return fail(500, 'not_configured', 'The assistant is not configured on this deployment.');
+    return fail(res, 500, 'not_configured', 'The assistant is not configured on this deployment.');
   }
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const encoder = new TextEncoder();
+  res.statusCode = 200;
+  res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  res.setHeader('cache-control', 'no-cache, no-transform');
+  res.setHeader('connection', 'keep-alive');
+  // Belt and braces against any proxy that would otherwise buffer the stream.
+  res.setHeader('x-accel-buffering', 'no');
+  res.flushHeaders?.();
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (payload) =>
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
 
-      try {
-        // Haiku 4.5 takes no `thinking` or `effort` parameter — a grounded FAQ
-        // answer needs neither, and passing `effort` would be rejected outright.
-        const claude = client.messages.stream({
-          model: MODEL,
-          max_tokens: MAX_TOKENS,
-          system: SYSTEM_PROMPT,
-          messages,
-        });
+  try {
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-        for await (const event of claude) {
-          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-            send({ type: 'delta', text: event.delta.text });
-          }
-        }
+    // Haiku 4.5 takes no `thinking` or `effort` parameter — a grounded FAQ
+    // answer needs neither, and passing `effort` would be rejected outright.
+    const claude = client.messages.stream({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      system: SYSTEM_PROMPT,
+      messages,
+    });
 
-        const final = await claude.finalMessage();
-        send({
-          type: 'done',
-          stop_reason: final.stop_reason,
-          usage: {
-            input: final.usage.input_tokens,
-            output: final.usage.output_tokens,
-          },
-        });
-      } catch (err) {
-        // Never leak upstream detail (which can echo the key's org or request
-        // shape) to the browser — log it, hand back something human.
-        console.error('[api/chat]', err);
-        const overloaded = err?.status === 429 || err?.status === 529;
-        send({
-          type: 'error',
-          message: overloaded
-            ? 'The assistant is busy right now. Please try again in a moment.'
-            : 'Something went wrong reaching the assistant.',
-        });
-      } finally {
-        controller.close();
+    for await (const event of claude) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        send({ type: 'delta', text: event.delta.text });
       }
-    },
-  });
+    }
 
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
-      connection: 'keep-alive',
-    },
-  });
+    const final = await claude.finalMessage();
+    send({
+      type: 'done',
+      stop_reason: final.stop_reason,
+      usage: { input: final.usage.input_tokens, output: final.usage.output_tokens },
+    });
+  } catch (err) {
+    // Never leak upstream detail (which can echo the key's org or request shape)
+    // to the browser — log it, hand back something human.
+    console.error('[api/chat]', err);
+    const overloaded = err?.status === 429 || err?.status === 529;
+    send({
+      type: 'error',
+      message: overloaded
+        ? 'The assistant is busy right now. Please try again in a moment.'
+        : 'Something went wrong reaching the assistant.',
+    });
+  } finally {
+    res.end();
+  }
 }
