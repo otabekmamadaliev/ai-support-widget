@@ -7,8 +7,9 @@ from their own knowledge base — and politely declines everything else.
 This repo contains both halves: the widget, and a fictional dental practice
 (**Northgate Dental Studio**) to demonstrate it on.
 
-**Live demo:** _(added after deploy)_
-**Embed demo:** `/embed-demo.html` — the same widget on a plain HTML page with no build step
+**Live demo:** https://ai-support-widget-sand.vercel.app
+**Embed demo:** https://ai-support-widget-sand.vercel.app/embed-demo.html — the same widget on a
+plain HTML page with no build step, whose CSS actively tries to break it
 
 ---
 
@@ -54,8 +55,8 @@ client installs nothing). Two lines on any page, in any stack:
 
 ```html
 <script
-  src="https://your-deployment.vercel.app/widget.js"
-  data-api="https://your-deployment.vercel.app/api/chat"
+  src="https://ai-support-widget-sand.vercel.app/widget.js"
+  data-api="https://ai-support-widget-sand.vercel.app/api/chat"
   data-name="Northgate Assistant"
   data-accent="#3f8ee6"
   data-greeting="Hi 👋 Ask me about prices or hours."
