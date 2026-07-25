@@ -232,12 +232,23 @@ export default async function handler(req, res) {
       });
     }
   } catch (err) {
-    // Never leak upstream detail (which can echo the key's project or request
-    // shape) to the browser — log it, hand back something human.
+    // Never leak upstream text (which can echo the key's project, quota figures
+    // or the request shape) to the browser — log the whole thing, and hand back
+    // a human message plus a `reason` derived *only* from the HTTP status.
+    // That's enough to tell a misconfigured deployment apart from an exhausted
+    // quota without exposing anything the caller shouldn't see.
     console.error('[api/chat]', err);
-    const status = err?.status ?? err?.code;
+
+    const status = typeof err?.status === 'number' ? err.status : null;
+    const reason =
+      { 400: 'bad_upstream_request', 403: 'key_rejected', 404: 'model_not_found', 429: 'quota' }[
+        status
+      ] ?? 'unknown';
+
     send({
       type: 'error',
+      reason,
+      status,
       message:
         status === 429
           ? "The assistant has hit today's free-tier limit. Please try again later."
