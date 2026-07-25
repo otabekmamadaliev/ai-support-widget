@@ -440,7 +440,12 @@ button {
   color: var(--faint);
 }
 .legal__by { display: flex; align-items: center; gap: 5px; }
-.legal__by i { width: 11px; height: 11px; border-radius: 3px; background: #d97757; }
+.legal__by i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #4285f4, #9b72cb 55%, #d96570);
+}
 
 /* ── Mobile: the panel becomes a full-screen sheet ────────────────────────── */
 

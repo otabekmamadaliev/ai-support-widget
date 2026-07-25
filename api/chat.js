@@ -1,23 +1,28 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
 import { buildSystemPrompt } from '../shared/clinic.js';
 
 /**
  * POST /api/chat
  *
- * Takes a transcript, streams Claude's reply back as Server-Sent Events.
- * The Anthropic API key lives only in this process — the browser bundle never
- * sees it, and the client cannot influence the system prompt or the model.
+ * Takes a transcript, streams the assistant's reply back as Server-Sent Events.
+ * The Gemini API key lives only in this process — the browser bundle never sees
+ * it, and the client cannot influence the system prompt or the model.
  *
- * Runs on the Node runtime rather than Edge: the Anthropic SDK reaches for
- * `node:fs` and `node:path`, which the Edge runtime refuses to bundle.
+ * Runs on the Node runtime rather than Edge so the same `(req, res)` handler can
+ * run locally under Vite with no adapter.
  */
 export const config = { runtime: 'nodejs', maxDuration: 30 };
 
 // ── Cost controls ────────────────────────────────────────────────────────────
-// This is a portfolio demo on a personal API key, so the limits are deliberately
-// tight. Every one of them is enforced here, on the server; the counter in the
-// widget's footer is a courtesy, not the control.
-const MODEL = 'claude-haiku-4-5';
+// This demo runs on the Gemini free tier, so the limits exist to stay inside a
+// daily request quota rather than a dollar budget. Every one of them is enforced
+// here, on the server; the counter in the widget's footer is a courtesy, not the
+// control.
+//
+// The model is an env var so it can be swapped without a code change — free-tier
+// quotas differ per model and Google retires older ones (gemini-2.0-flash is
+// already shut down).
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const MAX_TOKENS = 500; // a receptionist answer, not an essay
 const MAX_USER_MESSAGES = 20; // per session
 const MAX_TRANSCRIPT = 45; // user + assistant turns we'll accept at all
@@ -33,7 +38,7 @@ const SYSTEM_PROMPT = buildSystemPrompt();
  *
  * Note this is per-instance memory: serverless instances come and go, and
  * several can run at once, so a determined caller could get more than IP_LIMIT
- * through. It is a cost guardrail, not a security boundary — the hard ceilings
+ * through. It is a quota guardrail, not a security boundary — the hard ceilings
  * are MAX_TOKENS and MAX_USER_MESSAGES, which apply to every single request.
  * A real deployment would put this in Redis or Vercel KV.
  */
@@ -130,6 +135,14 @@ function validate(body) {
   return { messages: clean };
 }
 
+/** Our transcript shape → Gemini's. Gemini calls the assistant turn "model". */
+function toGeminiContents(messages) {
+  return messages.map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return fail(res, 405, 'method_not_allowed', 'Use POST.');
@@ -160,7 +173,7 @@ export default async function handler(req, res) {
 
   // Checked after validation so a malformed request still gets an accurate
   // reason, rather than every problem reporting as a configuration failure.
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.GEMINI_API_KEY) {
     return fail(res, 500, 'not_configured', 'The assistant is not configured on this deployment.');
   }
 
@@ -175,39 +188,60 @@ export default async function handler(req, res) {
   const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
 
   try {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    // Haiku 4.5 takes no `thinking` or `effort` parameter — a grounded FAQ
-    // answer needs neither, and passing `effort` would be rejected outright.
-    const claude = client.messages.stream({
+    const stream = await ai.models.generateContentStream({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages,
+      contents: toGeminiContents(messages),
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        maxOutputTokens: MAX_TOKENS,
+        // Gemini 2.5+ reasons before answering by default. A grounded FAQ lookup
+        // gains nothing from it and it burns free-tier tokens and latency, so
+        // it's off. 0 is DISABLED, -1 would be AUTOMATIC.
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
 
-    for await (const event of claude) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        send({ type: 'delta', text: event.delta.text });
+    let usage = null;
+    let sentAnything = false;
+
+    for await (const chunk of stream) {
+      const text = chunk.text;
+      if (text) {
+        sentAnything = true;
+        send({ type: 'delta', text });
       }
+      if (chunk.usageMetadata) usage = chunk.usageMetadata;
     }
 
-    const final = await claude.finalMessage();
-    send({
-      type: 'done',
-      stop_reason: final.stop_reason,
-      usage: { input: final.usage.input_tokens, output: final.usage.output_tokens },
-    });
+    if (!sentAnything) {
+      // A safety filter or an empty candidate — say so rather than closing the
+      // stream silently, which the widget would report as "no reply".
+      send({
+        type: 'error',
+        message: "I couldn't answer that one. Try rephrasing, or call the practice.",
+      });
+    } else {
+      send({
+        type: 'done',
+        usage: {
+          input: usage?.promptTokenCount ?? null,
+          output: usage?.candidatesTokenCount ?? null,
+        },
+      });
+    }
   } catch (err) {
-    // Never leak upstream detail (which can echo the key's org or request shape)
-    // to the browser — log it, hand back something human.
+    // Never leak upstream detail (which can echo the key's project or request
+    // shape) to the browser — log it, hand back something human.
     console.error('[api/chat]', err);
-    const overloaded = err?.status === 429 || err?.status === 529;
+    const status = err?.status ?? err?.code;
     send({
       type: 'error',
-      message: overloaded
-        ? 'The assistant is busy right now. Please try again in a moment.'
-        : 'Something went wrong reaching the assistant.',
+      message:
+        status === 429
+          ? "The assistant has hit today's free-tier limit. Please try again later."
+          : 'Something went wrong reaching the assistant.',
     });
   } finally {
     res.end();

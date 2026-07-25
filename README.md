@@ -1,8 +1,8 @@
 # AI Support Widget
 
-An embeddable "ask this site anything" chat bubble, powered by Claude. A business
-drops one `<script>` tag on their site and gets a support assistant that answers
-from their own knowledge base — and politely declines everything else.
+An embeddable "ask this site anything" chat bubble, powered by the Gemini API. A
+business drops one `<script>` tag on their site and gets a support assistant that
+answers from their own knowledge base — and politely declines everything else.
 
 This repo contains both halves: the widget, and a fictional dental practice
 (**Northgate Dental Studio**) to demonstrate it on.
@@ -16,31 +16,35 @@ plain HTML page with no build step, whose CSS actively tries to break it
 ## How it works
 
 ```
-Browser                    Vercel Node Function             Anthropic
+Browser                    Vercel Node Function              Google
 ┌──────────────┐            ┌──────────────────┐            ┌─────────┐
-│ widget       │ ─ POST ──▶ │ /api/chat        │ ─────────▶ │ Claude  │
-│ (shadow DOM) │            │ • rate limits    │            │ Haiku   │
-│              │ ◀── SSE ── │ • system prompt  │ ◀── SSE ── │  4.5    │
+│ widget       │ ─ POST ──▶ │ /api/chat        │ ─────────▶ │ Gemini  │
+│ (shadow DOM) │            │ • rate limits    │            │  2.5    │
+│              │ ◀── SSE ── │ • system prompt  │ ◀── SSE ── │  Flash  │
 └──────────────┘            │ • API key        │            └─────────┘
                             └──────────────────┘
 ```
 
-The function runs on the **Node** runtime, not Edge: the Anthropic SDK reaches
-for `node:fs` and `node:path`, which the Edge runtime refuses to bundle. Node
-streams responses just as well, and it means the same `(req, res)` handler runs
-locally under Vite with no adapter.
+The function runs on the **Node** runtime rather than Edge, which keeps the same
+`(req, res)` handler running locally under Vite with no adapter.
 
-**The API key never leaves the server.** It is read from `process.env.ANTHROPIC_API_KEY`
+**The API key never leaves the server.** It is read from `process.env.GEMINI_API_KEY`
 inside the serverless function. There is no `VITE_` prefix anywhere near it, so it
 cannot end up in the browser bundle. The client sends a transcript and gets text
 back; it cannot choose the model, change the system prompt, or see the key.
+
+> **On the provider swap.** This was originally built against the Claude API and
+> moved to Gemini to run on a free tier. It was a one-file change — `api/chat.js`
+> and nothing else. The widget, the SSE protocol, the shadow-DOM isolation, the
+> validation, the rate limiting and the knowledge base were all untouched, because
+> the provider call was the only thing that ever knew which provider it was.
 
 ### Files worth reading
 
 | Path | What it does |
 | --- | --- |
 | `shared/clinic.js` | The business: hours, prices, team, facts — **and** the function that turns them into the system prompt. Swap this one file and the same widget serves a gym or a salon. |
-| `api/chat.js` | The serverless function. Validation, rate limiting, and the streaming call to Claude. |
+| `api/chat.js` | The serverless function. Validation, rate limiting, and the streaming call to Gemini. |
 | `src/widget/SupportWidget.jsx` | The UI: launcher, panel, quick replies, keyboard and screen-reader behaviour. |
 | `src/widget/useChat.js` | Conversation state and the SSE reader. |
 | `src/widget/mount.jsx` | Creates the shadow root and injects the inlined stylesheet. |
@@ -93,29 +97,36 @@ The widget is untouched.
 
 ---
 
-## Keeping the bill small
+## Staying inside the free tier
 
-This runs on a personal API key, so the limits are deliberately tight. All of
-them are enforced **server-side** — the counter in the widget footer is a
-courtesy, not the control.
+This runs on a personal key on Gemini's free tier, so the limits exist to protect
+a daily request quota. All of them are enforced **server-side** — the counter in
+the widget footer is a courtesy, not the control.
 
 | Limit | Value | Where |
 | --- | --- | --- |
-| Model | `claude-haiku-4-5` | $1 / $5 per million tokens in/out |
-| Response length | 500 tokens | `max_tokens` — a receptionist answer, not an essay |
+| Model | `gemini-2.5-flash` | Overridable via the `GEMINI_MODEL` env var |
+| Thinking | **disabled** | `thinkingConfig: { thinkingBudget: 0 }` |
+| Response length | 500 tokens | `maxOutputTokens` — a receptionist answer, not an essay |
 | Messages per conversation | 20 | Counted from the submitted transcript |
-| Characters per message | 700 | Rejected before reaching Anthropic |
+| Characters per message | 700 | Rejected before reaching Google |
 | Requests per IP | 30/hour | In-memory sliding window |
 
-The per-IP window lives in the function instance's memory, so instances that
-scale out don't share a count — it's a cost guardrail, not a security boundary.
-The hard ceilings are `max_tokens` and the per-conversation cap, which apply to
-every single request. A production deployment would move the window to Vercel KV
-or Redis.
+Two of those are worth explaining.
 
-Haiku 4.5 takes no `thinking` or `effort` parameter, and neither is passed —
-grounded FAQ answering doesn't need reasoning tokens, and `effort` would be
-rejected outright on this model.
+**Thinking is off.** Gemini 2.5 and later reason before answering by default.
+Looking up a fixed price in a system prompt gains nothing from that, and it costs
+latency and quota on every single message — so `thinkingBudget: 0` disables it.
+
+**The model is an env var.** Free-tier quotas differ per model and Google retires
+older ones — `gemini-2.0-flash` is already shut down — so swapping model is a
+dashboard change, not a deploy.
+
+The per-IP window lives in the function instance's memory, so instances that
+scale out don't share a count — it's a quota guardrail, not a security boundary.
+The hard ceilings are `maxOutputTokens` and the per-conversation cap, which apply
+to every single request. A production deployment would move the window to Vercel
+KV or Redis.
 
 ---
 
@@ -142,7 +153,7 @@ function never lets the client supply or modify the system prompt.
 
 ```bash
 npm install
-cp .env.example .env.local   # add your Anthropic key
+cp .env.example .env.local   # add your Gemini key
 npm run dev
 ```
 
@@ -161,7 +172,7 @@ npm run preview   # serve dist/ — needed to try /embed-demo.html
 ## Deploying
 
 Import the repo on Vercel (Vite is auto-detected), then add
-`ANTHROPIC_API_KEY` under **Settings → Environment Variables** and redeploy.
+`GEMINI_API_KEY` under **Settings → Environment Variables** and redeploy.
 Until that variable exists the endpoint returns a clean
 `"The assistant is not configured on this deployment."` rather than failing
 noisily.
