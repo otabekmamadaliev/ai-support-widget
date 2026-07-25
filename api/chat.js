@@ -143,6 +143,32 @@ function toGeminiContents(messages) {
   }));
 }
 
+/**
+ * Turn reasoning down as far as the model allows.
+ *
+ * Looking up a fixed price in a system prompt gains nothing from reasoning, and
+ * it costs latency and free-tier quota on every message. Unhelpfully the knob
+ * differs by family — Gemini 3.x takes a `thinkingLevel` enum, 2.5 takes a
+ * numeric `thinkingBudget` — and sending the wrong one is a 400.
+ */
+function thinkingConfigFor(model) {
+  return model.startsWith('gemini-3')
+    ? { thinkingLevel: 'MINIMAL' }
+    : { thinkingBudget: 0 };
+}
+
+function openStream(ai, contents, { withThinkingConfig }) {
+  return ai.models.generateContentStream({
+    model: MODEL,
+    contents,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
+      maxOutputTokens: MAX_TOKENS,
+      ...(withThinkingConfig ? { thinkingConfig: thinkingConfigFor(MODEL) } : {}),
+    },
+  });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return fail(res, 405, 'method_not_allowed', 'Use POST.');
@@ -189,19 +215,19 @@ export default async function handler(req, res) {
 
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const contents = toGeminiContents(messages);
 
-    const stream = await ai.models.generateContentStream({
-      model: MODEL,
-      contents: toGeminiContents(messages),
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        maxOutputTokens: MAX_TOKENS,
-        // Gemini 2.5+ reasons before answering by default. A grounded FAQ lookup
-        // gains nothing from it and it burns free-tier tokens and latency, so
-        // it's off. 0 is DISABLED, -1 would be AUTOMATIC.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
+    // Turning thinking down is an optimisation, not a requirement. If the model
+    // rejects the knob we guessed for its family, drop it and answer anyway —
+    // a slightly more expensive reply beats a broken demo.
+    let stream;
+    try {
+      stream = await openStream(ai, contents, { withThinkingConfig: true });
+    } catch (err) {
+      if (err?.status !== 400) throw err;
+      console.warn(`[api/chat] ${MODEL} rejected the thinking config; retrying without it`);
+      stream = await openStream(ai, contents, { withThinkingConfig: false });
+    }
 
     let usage = null;
     let sentAnything = false;
